@@ -40,9 +40,22 @@ public:
   double min_parameter_update;
   double min_pose_change;
   std::string render_window;
-
+  double uncertain_weight_thresh;
+  
   SDF_Parameters();
   virtual ~SDF_Parameters();
+};
+
+class SDF_CamParameters
+{
+public:
+  int image_height;
+  int image_width;
+  double fx;
+  double fy;
+  double cx;
+  double cy;
+  SDF_CamParameters(); 
 };
 
 typedef Eigen::Matrix<double,6,1> Vector6d; 
@@ -63,8 +76,10 @@ class SDFTracker
 
   boost::mutex transformation_mutex_;
   boost::mutex depth_mutex_;
+  boost::mutex render_mutex;
   boost::mutex points_mutex_;
   boost::mutex depthDenoised_mutex_;
+  boost::mutex grid_mutex_;
   std::string camera_name_;
   
   bool** validityMask_;
@@ -76,6 +91,7 @@ class SDFTracker
   void MarchingTetrahedrons(Eigen::Vector4d &Origin, int tetrahedron);
   virtual void Init(SDF_Parameters &parameters);
   virtual void DeleteGrids(void);
+  virtual bool pixelValid(float &px);
 
   public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -95,6 +111,9 @@ class SDFTracker
   /// Loads a volume from a VTK image. The grid is resized to fit the loaded volume
   virtual void LoadSDF(const std::string &filename);
 
+  /// Resets all grids 
+  virtual void ResetSDF();
+
   /// Checks the validity of the gradient of the SDF at the current point   
   bool ValidGradient(const Eigen::Vector4d &location);
 
@@ -113,6 +132,9 @@ class SDFTracker
 
   /// Fuses the current depth map into the TSDF volume, the current depth map is set using UpdateDepth 
   virtual void FuseDepth(void);
+  
+  /// Fuses the depth map @param depth from a camera with parameters @cam_param taken from camera pose @param T  
+  virtual void FuseDepth(cv::Mat &depth, SDF_CamParameters &cam_param, const Eigen::Matrix4d &T);
 
   /// Fuses the current point vector into the TSDF volume, the current point vector is set using UpdatePoints 
   virtual void FusePoints(void);
@@ -170,6 +192,25 @@ class SDFTracker
   /// Constructor with custom parameters
   SDFTracker(SDF_Parameters &parameters);
   virtual ~SDFTracker();   
+
+  ///methods inherited from OccMap Interface
+  public:
+  virtual bool isOccupied(const Eigen::Vector3f &point) const;
+  virtual bool isUnknown(const Eigen::Vector3f &point) const;
+
+  //removed methods
+  //void RenderPointCloud(pcl::PointCloud<pcl::PointXYZ> &pc);
+  ///method to dump into an hiqp message
+  //virtual void toMessage(hiqp_msgs::SDFMap &msg);
+  //virtual void toMessage(constraint_map::SimpleOccMapMsg &msg);
+
+  virtual void convertToEuclidean();
+
+  private:
+
+  //both functions assume memory has been allocated aprropriately
+  void edt1d ( float *row_in, float *row_out, int &x);
+  void edt2d ( float **slice_in, float **slice_out, int &x, int &y);
 
 };
 

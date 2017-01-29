@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 2.8.3)
 set(CMAKE_BUILD_TYPE Release) 
+#set(CMAKE_BUILD_TYPE RelWithDebinfo) 
 project(sdf_tracker)
 
 ## Find catkin macros and libraries
@@ -7,28 +8,14 @@ project(sdf_tracker)
 ## is used, also find other catkin packages
 
 find_package(cmake_modules REQUIRED)
-find_package(Eigen3 REQUIRED)
-
-#Solve weird bug that has an eigen3 version not defining the good CMake variable
-if(NOT EIGEN3_INCLUDE_DIRS)              
-    if(NOT EIGEN3_INCLUDE_DIR)               
-		message(FATAL_ERROR "Undefined EIGEN include dir env var.")
-	else()
-		set(EIGEN3_INCLUDE_DIRS "${EIGEN3_INCLUDE_DIR}")
-		message(STATUS EIGEN3 include dir found)
-	endif()
-else()
-    message(STATUS EIGEN3 include dir found)
-endif()
-
-
-find_package(catkin REQUIRED COMPONENTS roscpp std_msgs cv_bridge)
+find_package(Eigen REQUIRED)
+find_package(catkin REQUIRED COMPONENTS roscpp visualization_msgs std_srvs std_msgs cv_bridge)
 
 catkin_package(
     DEPENDS eigen opencv2 libvtk
-    CATKIN_DEPENDS roscpp std_msgs cv_bridge
+    CATKIN_DEPENDS roscpp visualization_msgs std_srvs std_msgs cv_bridge 
     INCLUDE_DIRS include
-    LIBRARIES # TODO
+    LIBRARIES ${PROJECT_NAME}
 )
 find_package(VTK REQUIRED)
 add_executable(sdf_tracker_node src/sdf_tracker_node.cpp)
@@ -49,8 +36,8 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
   # TODO: List your msg files here
 #)
 
-include_directories(${EIGEN3_INCLUDE_DIRS} ${Boost_INCLUDE_DIRS} ${catkin_INCLUDE_DIRS} ${VTK_INCLUDE_DIRS} include)
-add_definitions(${EIGEN3_DEFINITIONS})
+include_directories(${EIGEN_INCLUDE_DIRS} ${Boost_INCLUDE_DIRS} ${catkin_INCLUDE_DIRS} ${VTK_INCLUDE_DIRS} include)
+add_definitions(${EIGEN_DEFINITIONS})
 target_link_libraries(${PROJECT_NAME} ${Boost_LIBRARIES} ${catkin_LIBRARIES} ${VTK_LIBRARIES})
 target_link_libraries(sdf_tracker_node ${Boost_LIBRARIES} ${catkin_LIBRARIES} ${PROJECT_NAME})
 
@@ -68,7 +55,7 @@ install(TARGETS sdf_tracker_node ${PROJECT_NAME}
         RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
        )
 
-install(DIRECTORY include/${PROJECT_NAME}/
+install(DIRECTORY include/sdf_tracker/
 	DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
        )
 install(FILES

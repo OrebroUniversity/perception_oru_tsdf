@@ -42,7 +42,22 @@ SDF_Parameters::SDF_Parameters()
   fy = 520.0;
   cx = 319.5;
   cy = 239.5;
+  //fx = 570.34;
+  //fy = 570.34;
+  //cx = 314.5;
+  //cy = 235.5;
   render_window = "Render";
+  uncertain_weight_thresh = 10;
+}
+
+SDF_CamParameters::SDF_CamParameters()
+{  
+  image_width = 640;
+  image_height = 480;
+  fx = 520.0;
+  fy = 520.0;
+  cx = 319.5;
+  cy = 239.5;
 }
 
 SDF_Parameters::~SDF_Parameters()
@@ -78,6 +93,33 @@ SDFTracker::~SDFTracker()
   
 };
 
+void SDFTracker::ResetSDF()
+{
+  
+  for (int i = 0; i < parameters_.image_height; ++i)
+  {
+    memset(validityMask_[i],0,parameters_.image_width);
+  }   
+
+  for (int x = 0; x < parameters_.XSize; ++x)
+  {
+    for (int y = 0; y < parameters_.YSize; ++y)
+    {
+      for (int z = 0; z < parameters_.ZSize; ++z)
+      {
+        myGrid_[x][y][z*2]=parameters_.Dmax;
+        myGrid_[x][y][z*2+1]=0.0f;
+      }
+    }
+  }
+  quit_ = false;
+  first_frame_ = true;
+  Pose_ << 0.0,0.0,0.0,0.0,0.0,0.0;
+  cumulative_pose_ << 0.0,0.0,0.0,0.0,0.0,0.0;
+  Transformation_=parameters_.pose_offset*Eigen::MatrixXd::Identity(4,4);
+
+}
+
 void SDFTracker::Init(SDF_Parameters &parameters)
 {
   parameters_ = parameters;
@@ -88,6 +130,7 @@ void SDFTracker::Init(SDF_Parameters &parameters)
   case 480: downsample = 1; break; //VGA
   case 240: downsample = 2; break; //QVGA
   case 120: downsample = 4; break; //QQVGA
+  default: downsample = 1; break;
   }
   parameters_.fx /= downsample;
   parameters_.fy /= downsample;
@@ -816,7 +859,7 @@ SDFTracker::UpdateDepth(const cv::Mat &depth)
     #pragma omp parallel for 
     for(int col=0; col<depthImage_->cols-0; ++col)
     { 
-      if(!std::isnan(Drow[col]) && Drow[col]>0.4)
+      if(!std::isnan(Drow[col]) && Drow[col]>0.01)
       {
       validityMask_[row][col]=true;
       }else
@@ -835,16 +878,17 @@ SDFTracker::UpdatePoints(const std::vector<Eigen::Vector4d,Eigen::aligned_alloca
   points_mutex_.unlock();
 }
 
+bool SDFTracker::pixelValid(float &px) {
+    return (!std::isnan(px) && px>0.01);
+}
 
-void 
-SDFTracker::FuseDepth(void)
-{
+void SDFTracker::FuseDepth(cv::Mat &depth, SDF_CamParameters &cparam, const Eigen::Matrix4d &T) {
   
   const float Wslope = 1/(parameters_.Dmax - parameters_.Dmin);
-  Eigen::Matrix4d worldToCam = Transformation_.inverse();
-  Eigen::Vector4d camera = worldToCam * Eigen::Vector4d(0.0,0.0,0.0,1.0);
+  Eigen::Matrix4d worldToCam = T.inverse();
   
   //Main 3D reconstruction loop
+  grid_mutex_.lock();
   for(int x = 0; x<parameters_.XSize; ++x)
   { 
   #pragma omp parallel for \
@@ -858,7 +902,81 @@ SDFTracker::FuseDepth(void)
         //define a ray and point it into the center of a node
         Eigen::Vector4d ray((x-parameters_.XSize/2)*parameters_.resolution, (y- parameters_.YSize/2)*parameters_.resolution , (z- parameters_.ZSize/2)*parameters_.resolution, 1);        
         ray = worldToCam*ray;
-        if(ray(2)-camera(2) < 0) continue;
+	//in front of the camera in camera coordinate frame
+        if(ray(2) <= 0) continue;
+        
+        cv::Point2d uv;
+        uv=To2D(ray,cparam.fx,cparam.fy,cparam.cx,cparam.cy);
+        
+        int j=floor(uv.x);
+        int i=floor(uv.y);      
+        
+        //if the projected coordinate is within image bounds
+	if(i>0 && i<depth.rows-1 && j>0 && j <depth.cols-1 ) {
+	    if(pixelValid(depth.at<float>(i,j)) && pixelValid(depth.at<float>(i-1,j)) && pixelValid(depth.at<float>(i,j-1)))
+	    {
+		const float* Di = depth.ptr<float>(i);
+		double Eta; 
+		// const float W=1/((1+Di[j])*(1+Di[j]));
+
+		Eta=(double(Di[j])-ray(2));       
+
+		if(Eta >= parameters_.Dmin)
+		{
+
+		    double D = std::min(Eta,parameters_.Dmax);
+
+		    float W = ((D - 1e-6) < parameters_.Dmax) ? 1.0f : Wslope*D - Wslope*parameters_.Dmin;
+
+		    previousD[z*2] = (previousD[z*2] * previousW[z*2] + float(D) * W) /
+			(previousW[z*2] + W);
+
+		    previousW[z*2] = std::min(previousW[z*2] + W , float(parameters_.Wmax));
+
+		}
+	    }//within valid region 
+	    else {
+		//debug: pixels that are hiting non-valid pixels
+		//previousW[z*2] = -1;
+	    }
+	}//within bounds
+	else {
+	    //pixels that hit outside image
+	    //previousW[z*2] = -2;
+	}	    
+      }//z   
+    }//y
+  }//x
+  grid_mutex_.unlock();
+  return;
+
+}
+
+void 
+SDFTracker::FuseDepth()
+{
+  
+  const float Wslope = 1/(parameters_.Dmax - parameters_.Dmin);
+  Eigen::Matrix4d worldToCam = Transformation_.inverse();
+  //Eigen::Vector4d camera = Transformation_ * Eigen::Vector4d(0.0,0.0,0.0,1.0);//worldToCam * Eigen::Vector4d(0.0,0.0,0.0,1.0);
+  
+  //Main 3D reconstruction loop
+  grid_mutex_.lock();
+  for(int x = 0; x<parameters_.XSize; ++x)
+  { 
+  #pragma omp parallel for \
+  shared(x)
+    for(int y = 0; y<parameters_.YSize;++y)
+    { 
+      float* previousD = &myGrid_[x][y][0];
+      float* previousW = &myGrid_[x][y][1];      
+      for(int z = 0; z<parameters_.ZSize; ++z)
+      {           
+        //define a ray and point it into the center of a node
+        Eigen::Vector4d ray((x-parameters_.XSize/2)*parameters_.resolution, (y- parameters_.YSize/2)*parameters_.resolution , (z- parameters_.ZSize/2)*parameters_.resolution, 1);        
+        ray = worldToCam*ray;
+	//in front of the camera in camera coordinate frame
+        if(ray(2) <= 0) continue;
         
         cv::Point2d uv;
         uv=To2D(ray,parameters_.fx,parameters_.fy,parameters_.cx,parameters_.cy );
@@ -867,32 +985,42 @@ SDFTracker::FuseDepth(void)
         int i=floor(uv.y);      
         
         //if the projected coordinate is within image bounds
-        if(i>0 && i<depthImage_->rows-1 && j>0 && j <depthImage_->cols-1 && validityMask_[i][j] &&    
-            validityMask_[i-1][j] && validityMask_[i][j-1])
-        {
-          const float* Di = depthImage_->ptr<float>(i);
-          double Eta; 
-          // const float W=1/((1+Di[j])*(1+Di[j]));
-            
-          Eta=(double(Di[j])-ray(2));       
-            
-          if(Eta >= parameters_.Dmin)
-          {
-              
-            double D = std::min(Eta,parameters_.Dmax);
+	if(i>0 && i<depthImage_->rows-1 && j>0 && j <depthImage_->cols-1 ) {
+	    if(validityMask_[i][j] && validityMask_[i-1][j] && validityMask_[i][j-1])
+	    {
+		const float* Di = depthImage_->ptr<float>(i);
+		double Eta; 
+		// const float W=1/((1+Di[j])*(1+Di[j]));
 
-            float W = ((D - 1e-6) < parameters_.Dmax) ? 1.0f : Wslope*D - Wslope*parameters_.Dmin;
-                
-            previousD[z*2] = (previousD[z*2] * previousW[z*2] + float(D) * W) /
-                      (previousW[z*2] + W);
+		Eta=(double(Di[j])-ray(2));       
 
-            previousW[z*2] = std::min(previousW[z*2] + W , float(parameters_.Wmax));
+		if(Eta >= parameters_.Dmin)
+		{
 
-          }//within visible region 
-        }//within bounds      
+		    double D = std::min(Eta,parameters_.Dmax);
+
+		    float W = ((D - 1e-6) < parameters_.Dmax) ? 1.0f : Wslope*D - Wslope*parameters_.Dmin;
+
+		    previousD[z*2] = (previousD[z*2] * previousW[z*2] + float(D) * W) /
+			(previousW[z*2] + W);
+
+		    previousW[z*2] = std::min(previousW[z*2] + W , float(parameters_.Wmax));
+
+		}
+	    }//within valid region 
+	    else {
+		//debug: pixels that are hiting non-valid pixels
+		//previousW[z*2] = -1;
+	    }
+	}//within bounds
+	else {
+	    //pixels that hit outside image
+	    //previousW[z*2] = -2;
+	}	    
       }//z   
     }//y
   }//x
+  grid_mutex_.unlock();
   return;
 };
 
@@ -907,6 +1035,7 @@ SDFTracker::FusePoints()
   const double max_ray_length = 50.0;
 
   //3D reconstruction loop
+  grid_mutex_.lock();
   #pragma omp parallel for 
   for(int i = 0; i < Points_.size(); ++i)
   {
@@ -1013,6 +1142,7 @@ SDFTracker::FusePoints()
       ++steps;        
     }//ray
   }//points
+  grid_mutex_.unlock();
   return;
 };
 
@@ -1046,9 +1176,10 @@ SDFTracker::FuseDepth(const cv::Mat& depth)
   cumulative_pose_ *= 0.0;
   
   Eigen::Matrix4d worldToCam = Transformation_.inverse();
-  Eigen::Vector4d camera = worldToCam * Eigen::Vector4d(0.0,0.0,0.0,1.0);
+  Eigen::Vector4d camera =  Transformation_* Eigen::Vector4d(0.0,0.0,0.0,1.0);;//worldToCam * Eigen::Vector4d(0.0,0.0,0.0,1.0);
   //Main 3D reconstruction loop
-  
+ 
+  grid_mutex_.lock();
   for(int x = 0; x<parameters_.XSize; ++x)
   { 
   #pragma omp parallel for \
@@ -1099,6 +1230,7 @@ SDFTracker::FuseDepth(const cv::Mat& depth)
       }//z   
     }//y
   }//x
+  grid_mutex_.unlock();
   Render();
   return;
 };
@@ -1346,6 +1478,7 @@ SDFTracker::EstimatePoseFromPoints(void)
 void 
 SDFTracker::Render(void)
 {
+  render_mutex.lock();
   //double minStep = parameters_.resolution/4;
   cv::Mat depthImage_out(parameters_.image_height,parameters_.image_width,CV_32FC1);
   cv::Mat preview(parameters_.image_height,parameters_.image_width,CV_8UC3);
@@ -1426,10 +1559,11 @@ SDFTracker::Render(void)
   if(parameters_.interactive_mode)
   {
  
-    cv::imshow(parameters_.render_window, preview);//depthImage_denoised);
-    char q = cv::waitKey(3);
+      cv::imshow(parameters_.render_window, preview);//depthImage_denoised);
+      char q = cv::waitKey(3);
     if(q == 'q' || q  == 27 || q  == 71 ) { quit_ = true; }//int(key)
   }
+  render_mutex.unlock();
   return;
 };
 
@@ -1472,7 +1606,8 @@ void SDFTracker::SaveSDF(const std::string &filename)
   //vtkImageData *sdf_volume = vtkImageData::New();
   
   vtkSmartPointer<vtkImageData> sdf_volume = vtkSmartPointer<vtkImageData>::New();
-  sdf_volume->SetExtent(0,parameters_.XSize-1,0,parameters_.YSize-1,0,parameters_.ZSize-1);
+
+  sdf_volume->SetDimensions(parameters_.XSize,parameters_.YSize,parameters_.ZSize);
   sdf_volume->SetOrigin(  parameters_.resolution*parameters_.XSize/2,
                           parameters_.resolution*parameters_.YSize/2,
                           parameters_.resolution*parameters_.ZSize/2);
@@ -1688,3 +1823,313 @@ Eigen::Vector3d SDFTracker::ShootSingleRay(Eigen::Vector3d &start, Eigen::Vector
     return Eigen::Vector3d(1,1,1)*std::numeric_limits<double>::infinity();
 
 }
+
+#if 0
+void SDFTracker::toMessage(constraint_map::SimpleOccMapMsg &msg) {
+    
+    msg.header.frame_id = "my_frame";
+    msg.cell_size = parameters_.resolution;
+    msg.x_cen = 0;//parameters_.XSize*parameters_.resolution/2;
+    msg.y_cen = 0;//parameters_.YSize*parameters_.resolution/2;
+    msg.z_cen = 0;//parameters_.ZSize*parameters_.resolution/2;
+    msg.x_size = parameters_.XSize;
+    msg.y_size = parameters_.YSize;
+    msg.z_size = parameters_.ZSize;
+
+    grid_mutex_.lock();
+    for(int x = 0; x<parameters_.XSize; ++x)
+    { 
+	for(int y = 0; y<parameters_.YSize;++y)
+	{ 
+	    float* previousD = &myGrid_[x][y][0];
+	    float* previousW = &myGrid_[x][y][1];      
+	    for(int z = 0; z<parameters_.ZSize; ++z)
+	    {           
+		int occ_val = -1;
+		//we are at Dmax and weight is initialized -> free
+		if(previousD[z*2] < parameters_.Dmax-1e-6 && previousW[z*2] > 0) {
+		    occ_val = 0;
+		}
+		if(previousD[z*2] < 0) {
+		    occ_val = 100;
+		}
+		msg.data.push_back(occ_val);
+
+	    }//z   
+	}//y
+    }//x
+    grid_mutex_.unlock();
+}
+  
+///method to dump into an hiqp message
+void SDFTracker::toMessage(hiqp_msgs::SDFMap &msg) {
+    //std::cerr<<"Serializing map\n";
+    msg.header.frame_id = "my_frame";
+    msg.XSize = parameters_.XSize;
+    msg.YSize = parameters_.YSize;
+    msg.ZSize = parameters_.ZSize;
+    msg.resolution = parameters_.resolution;
+    msg.Wmax = parameters_.Wmax;
+    msg.Dmax = parameters_.Dmax;
+    msg.Dmin = parameters_.Dmin;
+
+    //copy the grid... this looks very inefficient.
+    grid_mutex_.lock();
+    for(int x = 0; x<parameters_.XSize; ++x)
+    { 
+	for(int y = 0; y<parameters_.YSize;++y)
+	{ 
+	    for(int z = 0; z<2*parameters_.ZSize; ++z)
+	    {          
+		msg.grid.push_back(myGrid_[x][y][z]);	
+	    }//z	
+	}//y
+    }//x
+    grid_mutex_.unlock();
+    
+    //std::cerr<<"DONE Serializing map!\n";
+}
+#endif
+
+bool SDFTracker::isOccupied(const Eigen::Vector3f &point) const {
+   double I,J,K;
+   modf(point(0)/parameters_.resolution + parameters_.XSize/2, &I);
+   modf(point(1)/parameters_.resolution + parameters_.YSize/2, &J);  
+   modf(point(2)/parameters_.resolution + parameters_.ZSize/2, &K);
+   if(std::isnan(I) || std::isnan(J) || std::isnan(K)) return true;
+   int i = (int)I,  j = (int)J, k= (int)K; 
+
+   if(i<0 || i>=parameters_.XSize || j<0 || j>=parameters_.YSize || k<0 || k>=parameters_.ZSize) {
+	return true; //outside is considered occupied everywhere
+   }
+   if(myGrid_[i][j][k*2] < 0 || fabsf(myGrid_[i][j][k*2+1]) < 1e-5) {
+       return true;
+   }
+   return false;
+}
+
+bool SDFTracker::isUnknown(const Eigen::Vector3f &point) const {
+   double I,J,K;
+   modf(point(0)/parameters_.resolution + parameters_.XSize/2, &I);
+   modf(point(1)/parameters_.resolution + parameters_.YSize/2, &J);  
+   modf(point(2)/parameters_.resolution + parameters_.ZSize/2, &K);
+   if(std::isnan(I) || std::isnan(J) || std::isnan(K)) return true;
+   int i = (int)I,  j = (int)J, k= (int)K; 
+
+   if(i<0 || i>=parameters_.XSize || j<0 || j>=parameters_.YSize || k<0 || k>=parameters_.ZSize) {
+	return true; //outside is considered unknown everywhere
+   }
+
+   //distance has been initialized and weight have been computed, we have seen this
+   if(myGrid_[i][j][k*2] < parameters_.Dmax-1e-6 && myGrid_[i][j][k*2+1] > 0) {
+       return false;
+   }
+
+   return true;
+
+}
+
+void SDFTracker::convertToEuclidean() {
+
+    float ***init; //new euclidean distance grid
+    float ***edt; //new euclidean distance grid
+    float ***int_yview; //view indexed by columns first
+    float ***yview; //view by columns result
+
+    float DMAX = 0.5 / parameters_.resolution;
+    float DMAX_SQ = DMAX*DMAX;
+
+    //allocate grids
+    init = new float**[parameters_.XSize];
+    edt = new float**[parameters_.XSize];
+    for (int i = 0; i < parameters_.XSize; ++i) {
+	init[i] = new float*[parameters_.YSize];
+	edt[i] = new float*[parameters_.YSize];
+
+	for (int j = 0; j < parameters_.YSize; ++j) {
+	    init[i][j] = new float[parameters_.ZSize];
+	    edt[i][j] = new float[parameters_.ZSize];
+	}
+    }
+    //y views
+    int_yview = new float**[parameters_.YSize];
+    yview = new float**[parameters_.YSize];
+    for (int j = 0; j < parameters_.YSize; ++j) {
+	int_yview[j] = new float*[parameters_.XSize];
+	yview[j] = new float*[parameters_.XSize];
+
+	for (int i = 0; i < parameters_.XSize; ++i) {
+	    int_yview[j][i] = new float[parameters_.ZSize];
+	    yview[j][i] = new float[parameters_.ZSize];
+	}
+    }
+
+    //fill in with initial values
+    for (int x = 0; x < parameters_.XSize; ++x) {
+	for (int y = 0; y < parameters_.YSize; ++y) {
+	    for (int z = 0; z < parameters_.ZSize; ++z) {
+		if(myGrid_[x][y][z*2] + 1e-6 < parameters_.Dmax ) {
+		    init[x][y][z] = pow(myGrid_[x][y][z*2]/parameters_.resolution,2);
+		} else {
+		    init[x][y][z] = DMAX_SQ;
+		}
+	    }
+	}
+    }
+
+    //pass through x view
+    for (int x = 0; x < parameters_.XSize; ++x) {
+	edt2d(init[x],edt[x], parameters_.YSize, parameters_.ZSize);
+	//copy result from slice into intermediate y_view
+	for (int y = 0; y < parameters_.YSize; ++y) {
+	    for (int z = 0; z < parameters_.ZSize; ++z) {
+		int_yview[y][x][z] = edt[x][y][z];
+	    }
+	}
+    }
+
+    //pass through y view
+    for (int y = 0; y < parameters_.YSize; ++y) {
+	edt2d(int_yview[y],yview[y], parameters_.XSize, parameters_.ZSize);
+	//copy results back into edt and deallocate slice
+	for (int x = 0; x < parameters_.XSize; ++x) {
+	    for (int z = 0; z < parameters_.ZSize; ++z) {
+		edt[x][y][z] = yview[y][x][z];
+	    }
+	    delete [] yview[y][x];
+	    delete [] int_yview[y][x];
+	}
+	delete [] yview[y];
+	delete [] int_yview[y];
+    }
+    delete [] yview;
+    delete [] int_yview;
+
+    ///update myGrid with result and deallocate
+    for (int x = 0; x < parameters_.XSize; ++x) {
+	for (int y = 0; y < parameters_.YSize; ++y) {
+	    for (int z = 0; z < parameters_.ZSize; ++z) {
+		 float sign = myGrid_[x][y][z*2] >= 0 ? 1 : -1;
+		 //if(myGrid_[x][y][z*2+1] > parameters_.uncertain_weight_thresh) {
+		     myGrid_[x][y][z*2] = sign*sqrt(edt[x][y][z])*parameters_.resolution;
+		     if(myGrid_[x][y][z*2] > parameters_.Dmax) {
+			 parameters_.Dmax = myGrid_[x][y][z*2];
+		     }
+		 //}
+	    }
+	    delete [] init[x][y];
+	    delete [] edt[x][y];
+	}
+	delete [] init[x];
+	delete [] edt[x];
+    }
+    delete [] init;
+    delete [] edt;
+
+}
+  
+void SDFTracker::edt1d ( float *row_in, float *row_out, int &nx) {
+
+    int k = 0;
+    std::vector<int> v;
+    std::vector<float> z;
+    v.push_back(0);
+    z.push_back(INT_MIN);
+    z.push_back(INT_MAX);
+
+    for (int q=1; q<nx; q++) {
+	float s = ((row_in[q] + q*q) - (row_in[v[k]] + v[k]*v[k] ))/(2*q - 2*v[k]); 
+	while (s <= z[k]) {
+	    k = k-1;
+	    s = ((row_in[q] + q*q) - (row_in[v[k]] + v[k]*v[k] ))/(2*q - 2*v[k]);
+	}
+
+	if(s > z[k]) {
+	    k=k+1;
+	    if(k >= v.size()) {
+		v.push_back(q);
+	    } else {
+		v[k] = q;
+	    }
+	    if(k >= z.size()) {
+		z.push_back(s);
+	    } else {
+		z[k] = s;
+	    }
+	    if(k+1 >= z.size()) {
+		z.push_back(INT_MAX);
+	    } else {
+		z[k+1] = INT_MAX;
+	    }
+	}	    
+    }
+    
+    k=0;
+    for (int q=0; q<nx; q++) { //nx-1 ??
+	while (z[k+1] < q) {
+	    k++;
+	}
+	row_out[q] = (q-v[k])*(q-v[k]) + row_in[v[k]];
+    }
+    return;
+}
+
+void SDFTracker::edt2d ( float **slice_in, float **slice_out, int &nx, int &ny) {
+
+    float **intermediate, **yview;
+    intermediate = new float*[ny];
+    yview = new float*[ny];
+    for (int j=0; j< ny; j++) {
+	intermediate[j] = new float[nx];
+	yview[j] = new float[nx];	
+    }
+
+    for (int i=0; i< nx; i++) {
+	edt1d(slice_in[i], slice_out[i], ny);
+	//copy into intermediate column view
+	for (int j=0; j< ny; j++) {
+	    intermediate[j][i] = slice_out[i][j];
+	}
+    }
+
+    //now the other direction
+    for (int j=0; j< ny; j++) {
+	edt1d(intermediate[j], yview[j], nx);
+	for (int i=0; i< nx; i++) {
+	    slice_out[i][j] = yview[j][i];
+	}
+	delete[] intermediate[j];
+	delete[] yview[j];
+    }
+    delete[] intermediate;
+    delete[] yview;
+}
+
+/*
+void SDFTracker::RenderPointCloud(pcl::PointCloud<pcl::PointXYZ> &pc) {
+    
+    grid_mutex_.lock();
+    for(int x = 0; x<parameters_.XSize; ++x)
+    { 
+	for(int y = 0; y<parameters_.YSize;++y)
+	{ 
+	    float* previousD = &myGrid_[x][y][0];
+	    float* previousW = &myGrid_[x][y][1];      
+	    for(int z = 0; z<parameters_.ZSize; ++z)
+	    {           
+		int occ_val = -1;
+		//we are at Dmax and weight is initialized -> free
+		if(previousD[z*2] > parameters_.Dmax-1e-6 && previousW[z*2] > 0) {
+		    occ_val = 0;
+		}
+		if(previousD[z*2] < 0) {
+		    occ_val = 100;
+		}
+
+	    }//z   
+	}//y
+    }//x
+    grid_mutex_.unlock();
+
+}
+*/
