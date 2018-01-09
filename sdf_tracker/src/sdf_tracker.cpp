@@ -133,10 +133,12 @@ void SDFTracker::Init(SDF_Parameters &parameters)
   cumulative_pose_ << 0.0,0.0,0.0,0.0,0.0,0.0;
   Transformation_=parameters_.pose_offset*Eigen::MatrixXd::Identity(4,4);
 
+#if 0
   if(parameters_.interactive_mode)
   {
     cv::namedWindow( parameters_.render_window, 0 );
   }
+#endif
 };
 
 void SDFTracker::DeleteGrids(void)
@@ -1383,7 +1385,8 @@ SDFTracker::Render(void)
 
           hit = true;
           Eigen::Vector4d normal_vector = Eigen::Vector4d::Zero();
- 
+
+#if 0 
           if(parameters_.interactive_mode)
           {  
             for(int ii=0; ii<3; ++ii)
@@ -1396,7 +1399,8 @@ SDFTracker::Render(void)
             preview.at<cv::Vec3b>(u,v)[2]=128-rint(normal_vector(1)*127);
             preview.at<cv::Vec3b>(u,v)[0]=128-rint(normal_vector(2)*127);
           }
-          
+#endif
+
           depthImage_out.at<float>(u,v)=scaling*(viewAxis.dot(p));
           break;
         }
@@ -1408,13 +1412,15 @@ SDFTracker::Render(void)
       {
         //Input values are better than nothing.
         depthImage_out.at<float>(u,v)=depthImage_->ptr<float>(u)[v];  
-  
+ 
+#if 0	
         if(parameters_.interactive_mode)
         {
           preview.at<cv::Vec3b>(u,v)[0]=uchar(30);
           preview.at<cv::Vec3b>(u,v)[1]=uchar(30);
           preview.at<cv::Vec3b>(u,v)[2]=uchar(30);
         }
+#endif
       }//no hit
     }//col
   }//row
@@ -1423,6 +1429,7 @@ SDFTracker::Render(void)
   depthImage_out.copyTo(*depthImage_denoised_);
   depthDenoised_mutex_.unlock();    
  
+#if 0
   if(parameters_.interactive_mode)
   {
  
@@ -1430,6 +1437,7 @@ SDFTracker::Render(void)
     char q = cv::waitKey(3);
     if(q == 'q' || q  == 27 || q  == 71 ) { quit_ = true; }//int(key)
   }
+#endif
   return;
 };
 
