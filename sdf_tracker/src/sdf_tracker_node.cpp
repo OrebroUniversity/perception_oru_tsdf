@@ -140,7 +140,7 @@ SDFTrackerNode::subscribeTopic(const std::string topic)
   {
     if(topic.compare(std::string("default")) == 0)
     {
-      subscribe_topic_depth = camera_name_+"/depth_registered/image";
+      subscribe_topic_depth = camera_name_+"/depth_registered/image_raw";
       subscribe_topic_color = camera_name_+"/rgb/image_color";
     }
 

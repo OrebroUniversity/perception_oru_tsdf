@@ -22,10 +22,18 @@ else()
 endif()
 
 
-find_package(catkin REQUIRED COMPONENTS roscpp std_msgs cv_bridge)
+find_package(catkin REQUIRED COMPONENTS roscpp std_msgs cv_bridge )
+find_package(OpenCV 3 REQUIRED
+	COMPONENTS
+	opencv_core
+	opencv_imgproc
+	opencv_imgcodecs
+	opencv_highgui
+	CONFIG
+)
 
 catkin_package(
-    DEPENDS eigen opencv2 libvtk
+    DEPENDS eigen libvtk
     CATKIN_DEPENDS roscpp std_msgs cv_bridge
     INCLUDE_DIRS include
     LIBRARIES # TODO
@@ -51,8 +59,8 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
 
 include_directories(${EIGEN3_INCLUDE_DIRS} ${Boost_INCLUDE_DIRS} ${catkin_INCLUDE_DIRS} ${VTK_INCLUDE_DIRS} include)
 add_definitions(${EIGEN3_DEFINITIONS})
-target_link_libraries(${PROJECT_NAME} ${Boost_LIBRARIES} ${catkin_LIBRARIES} ${VTK_LIBRARIES})
-target_link_libraries(sdf_tracker_node ${Boost_LIBRARIES} ${catkin_LIBRARIES} ${PROJECT_NAME})
+target_link_libraries(${PROJECT_NAME} ${Boost_LIBRARIES} ${catkin_LIBRARIES} ${VTK_LIBRARIES} ${OpenCV_LIBS})
+target_link_libraries(sdf_tracker_node ${Boost_LIBRARIES} ${catkin_LIBRARIES} ${PROJECT_NAME} ${OpenCV_LIBS})
 
 #target_link_libraries(example ${PROJECT_NAME})
 ## Generate added messages and services with any dependencies listed here
