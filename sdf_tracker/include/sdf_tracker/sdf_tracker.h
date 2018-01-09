@@ -44,6 +44,19 @@ public:
   virtual ~SDF_Parameters();
 };
 
+class SDF_CamParameters
+{
+    public:
+	int image_height;
+	int image_width;
+	double fx;
+	double fy;
+	double cx;
+	double cy;
+	SDF_CamParameters(); 
+};
+
+
 typedef Eigen::Matrix<double,6,1> Vector6d; 
 
 class SDFTracker
@@ -64,17 +77,23 @@ class SDFTracker
   boost::mutex depth_mutex_;
   boost::mutex points_mutex_;
   boost::mutex depthDenoised_mutex_;
-  std::string camera_name_;
+  boost::mutex render_mutex;
+
   
   bool** validityMask_;
   float*** myGrid_; 
   bool first_frame_;
   bool quit_;
+  
   // functions 
   Eigen::Vector4d VertexInterp(double iso, Eigen::Vector4d &p1d, Eigen::Vector4d &p2d,double valp1, double valp2);
   void MarchingTetrahedrons(Eigen::Vector4d &Origin, int tetrahedron);
   virtual void Init(SDF_Parameters &parameters);
   virtual void DeleteGrids(void);
+  
+  inline bool pixelValid(float &px) {
+      return (!std::isnan(px) && px>0.01);
+  }
 
   public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -93,6 +112,9 @@ class SDFTracker
   
   /// Loads a volume from a VTK image. The grid is resized to fit the loaded volume
   virtual void LoadSDF(const std::string &filename);
+
+  /// Resets all grids 
+  virtual void ResetSDF();
 
   /// Checks the validity of the gradient of the SDF at the current point   
   bool ValidGradient(const Eigen::Vector4d &location);
@@ -118,6 +140,9 @@ class SDFTracker
 
   /// Estimates the pose, fuses the given depth map and renders a virtual depth map (all in one) 
   virtual void FuseDepth(const cv::Mat &depth);
+
+  /// Fuses the depth map @param depth from a camera with parameters @cam_param taken from camera pose @param T  
+  virtual void FuseDepth(cv::Mat &depth, SDF_CamParameters &cam_param, const Eigen::Matrix4d &T);
 
   /// Render a virtual depth map. If interactive mode is true (see class SDF_Parameters) it will also display a preview window with estimated normal vectors
   virtual void Render(void);

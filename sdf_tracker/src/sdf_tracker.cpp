@@ -46,6 +46,17 @@ SDF_Parameters::SDF_Parameters()
   render_window = "Render";
 }
 
+SDF_CamParameters::SDF_CamParameters()
+{  
+    image_width = 640;
+    image_height = 480;
+    fx = 520.0;
+    fy = 520.0;
+    cx = 319.5;
+    cy = 239.5;
+}
+
+
 SDF_Parameters::~SDF_Parameters()
 {}
 
@@ -79,6 +90,34 @@ SDFTracker::~SDFTracker()
   
 };
 
+void SDFTracker::ResetSDF()
+{
+
+    for (int i = 0; i < parameters_.image_height; ++i)
+    {
+	memset(validityMask_[i],0,parameters_.image_width);
+    }   
+
+    for (int x = 0; x < parameters_.XSize; ++x)
+    {
+	for (int y = 0; y < parameters_.YSize; ++y)
+	{
+	    for (int z = 0; z < parameters_.ZSize; ++z)
+	    {
+		myGrid_[x][y][z*2]=parameters_.Dmax;
+		myGrid_[x][y][z*2+1]=0.0f;
+	    }
+	}
+    }
+    quit_ = false;
+    first_frame_ = true;
+    Pose_ << 0.0,0.0,0.0,0.0,0.0,0.0;
+    cumulative_pose_ << 0.0,0.0,0.0,0.0,0.0,0.0;
+    Transformation_=parameters_.pose_offset*Eigen::MatrixXd::Identity(4,4);
+
+}
+
+
 void SDFTracker::Init(SDF_Parameters &parameters)
 {
   parameters_ = parameters;
@@ -89,6 +128,7 @@ void SDFTracker::Init(SDF_Parameters &parameters)
   case 480: downsample = 1; break; //VGA
   case 240: downsample = 2; break; //QVGA
   case 120: downsample = 4; break; //QQVGA
+  default: downsample = 1; break;
   }
   parameters_.fx /= downsample;
   parameters_.fy /= downsample;
@@ -834,6 +874,74 @@ SDFTracker::UpdatePoints(const std::vector<Eigen::Vector4d,Eigen::aligned_alloca
   points_mutex_.lock();
   this->Points_ = Points;
   points_mutex_.unlock();
+}
+
+void SDFTracker::FuseDepth(cv::Mat &depth, SDF_CamParameters &cparam, const Eigen::Matrix4d &T) {
+
+    const float Wslope = 1/(parameters_.Dmax - parameters_.Dmin);
+    Eigen::Matrix4d worldToCam = T.inverse();
+
+    //Main 3D reconstruction loop
+    for(int x = 0; x<parameters_.XSize; ++x)
+    { 
+#pragma omp parallel for \
+	shared(x)
+	for(int y = 0; y<parameters_.YSize;++y)
+	{ 
+	    float* previousD = &myGrid_[x][y][0];
+	    float* previousW = &myGrid_[x][y][1];      
+	    for(int z = 0; z<parameters_.ZSize; ++z)
+	    {           
+		//define a ray and point it into the center of a node
+		Eigen::Vector4d ray((x-parameters_.XSize/2)*parameters_.resolution, (y- parameters_.YSize/2)*parameters_.resolution , (z- parameters_.ZSize/2)*parameters_.resolution, 1);        
+		ray = worldToCam*ray;
+		//in front of the camera in camera coordinate frame
+		if(ray(2) <= 0) continue;
+
+		cv::Point2d uv;
+		uv=To2D(ray,cparam.fx,cparam.fy,cparam.cx,cparam.cy);
+
+		int j=floor(uv.x);
+		int i=floor(uv.y);      
+
+		//if the projected coordinate is within image bounds
+		if(i>0 && i<depth.rows-1 && j>0 && j <depth.cols-1 ) {
+		    if(pixelValid(depth.at<float>(i,j)) && pixelValid(depth.at<float>(i-1,j)) && pixelValid(depth.at<float>(i,j-1)))
+		    {
+			const float* Di = depth.ptr<float>(i);
+			double Eta; 
+			// const float W=1/((1+Di[j])*(1+Di[j]));
+
+			Eta=(double(Di[j])-ray(2));       
+
+			if(Eta >= parameters_.Dmin)
+			{
+
+			    double D = std::min(Eta,parameters_.Dmax);
+
+			    float W = ((D - 1e-6) < parameters_.Dmax) ? 1.0f : Wslope*D - Wslope*parameters_.Dmin;
+
+			    previousD[z*2] = (previousD[z*2] * previousW[z*2] + float(D) * W) /
+				(previousW[z*2] + W);
+
+			    previousW[z*2] = std::min(previousW[z*2] + W , float(parameters_.Wmax));
+
+			}
+		    }//within valid region 
+		    else {
+			//debug: pixels that are hiting non-valid pixels
+			//previousW[z*2] = -1;
+		    }
+		}//within bounds
+		else {
+		    //pixels that hit outside image
+		    //previousW[z*2] = -2;
+		}	    
+	    }//z   
+	}//y
+    }//x
+    return;
+
 }
 
 
