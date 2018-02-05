@@ -2,6 +2,7 @@
 #include <ros/console.h>
 #include <sensor_msgs/Image.h>
 #include <cv_bridge/cv_bridge.h>
+#include <opencv2/highgui/highgui.hpp>
 #include <visualization_msgs/MarkerArray.h>
 #include <visualization_msgs/Marker.h>
 #include <std_srvs/Empty.h>
@@ -18,11 +19,12 @@ class SDFTrackerNode
 public:
   SDFTrackerNode(SDF_Parameters &parameters);
   virtual ~SDFTrackerNode();
- void subscribeTopic(const std::string topic = std::string("default"));    
- void advertiseTopic(const std::string topic = std::string("default"));    
+  void subscribeTopic(const std::string topic = std::string("default"));    
+ void advertiseTopic(const std::string topic = std::string("default"));
  void rgbCallback(const sensor_msgs::Image::ConstPtr& msg);
  void depthCallback(const sensor_msgs::Image::ConstPtr& msg);
  void PublishMarker();
+ void cloudCallback(const sensor_msgs::PointCloud2ConstPtr& cloud_msg);
 
 private:
   int skip_frames_;
@@ -33,11 +35,16 @@ private:
   std::vector<ros::Time> timestamps_;
   ros::NodeHandle nh_;
   ros::NodeHandle n_;
+  ros::NodeHandle cloud_nh_;
   ros::Subscriber depth_subscriber_;
   ros::Subscriber color_subscriber_;
+  ros::Subscriber cloud_sub_;
   ros::Publisher depth_publisher_;
   ros::Publisher color_publisher_;
   ros::Publisher vis_pub_;
+  ros::Publisher sdf_cloud_pub_;
+  ros::Publisher rgb_cloud_pub_;
+  ros::Publisher segmented_cloud_pub_;
   ros::ServiceServer save_map_;
   ros::ServiceServer publish_map_;
 
@@ -60,7 +67,10 @@ private:
 
 
 SDFTrackerNode::SDFTrackerNode(SDF_Parameters &parameters)
-{
+{  
+  //viewer.reset(new pcl::visualization::PCLVisualizer ("3D Viewer"));
+  //viewer->setBackgroundColor (0, 0, 0);
+
   myParameters_ = parameters;
   nh_ = ros::NodeHandle("~");
   n_ = ros::NodeHandle();
@@ -145,16 +155,16 @@ SDFTrackerNode::~SDFTrackerNode()
 void
 SDFTrackerNode::subscribeTopic(const std::string topic)
 {
-  
   std::string subscribe_topic_depth = topic;
   std::string subscribe_topic_color = topic;
+  use_texture_ = true;
 
   if(depth_registered_)
   {
     if(topic.compare(std::string("default")) == 0)
     {
       subscribe_topic_depth = camera_name_+"/depth_registered/image_raw";
-      subscribe_topic_color = camera_name_+"/rgb/image_color";
+      subscribe_topic_color = camera_name_+"/rgb/image_rect_color"; ///rgb/image_color
     }
 
     depth_subscriber_ = n_.subscribe(subscribe_topic_depth, 1, &SDFTrackerNode::depthCallback, this);
@@ -165,11 +175,13 @@ SDFTrackerNode::subscribeTopic(const std::string topic)
     if(topic.compare(std::string("default")) == 0)
     { 
       subscribe_topic_depth = camera_name_+"/depth/image";
-      subscribe_topic_color = camera_name_+"/rgb/image_color";
+      subscribe_topic_color = camera_name_+"/rgb/image_rect_color"; ///rgb/image_color
     }
       depth_subscriber_ = n_.subscribe(subscribe_topic_depth, 1, &SDFTrackerNode::depthCallback, this);
       if(use_texture_) color_subscriber_ = n_.subscribe(subscribe_topic_color, 1, &SDFTrackerNode::rgbCallback, this);
   }
+
+  cloud_sub_ = cloud_nh_.subscribe ("/camera/depth_registered/points", 1, &SDFTrackerNode::cloudCallback, this);
 }
 
 void
@@ -193,6 +205,9 @@ SDFTrackerNode::advertiseTopic(const std::string topic)
   vis_pub_ = nh_.advertise<visualization_msgs::MarkerArray>( "sdf_marker", 10, true );
   save_map_ = nh_.advertiseService("save_map", &SDFTrackerNode::save_map_callback, this);
   publish_map_ = nh_.advertiseService("publish_map", &SDFTrackerNode::publish_map_callback, this);
+  sdf_cloud_pub_ = cloud_nh_.advertise<sensor_msgs::PointCloud2> ("sdf_cloud", 1);
+  rgb_cloud_pub_ = cloud_nh_.advertise<sensor_msgs::PointCloud2> ("rgb_cloud", 1);
+  segmented_cloud_pub_ = cloud_nh_.advertise<sensor_msgs::PointCloud2> ("segmented_cloud", 1);
 
 }
 void SDFTrackerNode::publishDepthDenoisedImage(const ros::TimerEvent& event) 
@@ -222,11 +237,23 @@ void SDFTrackerNode::rgbCallback(const sensor_msgs::Image::ConstPtr& msg)
   
     /* do something colorful"*/
   }
+
+  if(use_texture_)
+  {
+      myTracker_->rgb_image = bridge->image.clone();
+      //cv::imshow("Image window", myTracker_->rgb_image);
+      //cv::waitKey(3);
+      //std::cerr<< "node cols: " <<  bridge->image.cols << "\n";
+      //std::cerr<< "rgb: " << (int)bridge->image.at<cv::Vec3b>(bridge->image.rows-1,1)[0] << "\n";
+      use_texture_ = false;
+  }
 }
 
 void SDFTrackerNode::depthCallback(const sensor_msgs::Image::ConstPtr& msg)
 {
+  use_texture_ = true;
   cv_bridge::CvImageConstPtr bridge;
+
   try
   {
     bridge = cv_bridge::toCvCopy(msg, "32FC1");
@@ -241,9 +268,8 @@ void SDFTrackerNode::depthCallback(const sensor_msgs::Image::ConstPtr& msg)
 
   if(!myTracker_->Quit())
   {
-
     #ifdef LIDAR
-      
+
       //LIDAR-like alternative for updating with points (suggestion: set the MaxWeight parameter to a number around 300000 (648x480) )
       //MaximumRaycastSteps should also be set to a higher value than usual.
 
@@ -255,7 +281,6 @@ void SDFTrackerNode::depthCallback(const sensor_msgs::Image::ConstPtr& msg)
           points.push_back( myTracker_->To3D(u,v,bridge->image.at<float>(u,v),myParameters_.fx,myParameters_.fy,myParameters_.cx,myParameters_.cy) );
         }
       }
-
       if(skip_frames_ == 3)
       {  
         myTracker_->UpdatePoints(points);
@@ -290,6 +315,31 @@ void SDFTrackerNode::depthCallback(const sensor_msgs::Image::ConstPtr& msg)
   
     ros::shutdown();
   }
+}
+
+void SDFTrackerNode::cloudCallback(const sensor_msgs::PointCloud2ConstPtr& cloud_msg)
+{
+  pcl::PCLPointCloud2 cloud_filtered;
+  sensor_msgs::PointCloud2 output;
+
+  myTracker_->gridToSDFPointCloud(0.03, -0.02);
+  myTracker_->sdf_cloud->header.frame_id = "camera_depth_optical_frame";
+  pcl::toPCLPointCloud2(*myTracker_->sdf_cloud, cloud_filtered);
+  pcl_conversions::fromPCL(cloud_filtered, output);  
+  // Publish the data
+  sdf_cloud_pub_.publish (output);
+
+  myTracker_->gridToRGBPointCloud(0.03, -0.02);
+  myTracker_->rgb_cloud->header.frame_id = "camera_depth_optical_frame";
+  pcl::toPCLPointCloud2(*myTracker_->rgb_cloud, cloud_filtered);
+  pcl_conversions::fromPCL(cloud_filtered, output);
+  rgb_cloud_pub_.publish (output);
+
+  if(myTracker_->sdf_cloud->size()) myTracker_->regionGrowingSegmentation(100, 1.0);
+  myTracker_->segmented_cloud->header.frame_id = "camera_depth_optical_frame";
+  pcl::toPCLPointCloud2(*myTracker_->segmented_cloud, cloud_filtered);
+  pcl_conversions::fromPCL(cloud_filtered, output);
+  segmented_cloud_pub_.publish (output);
 }
 
 void SDFTrackerNode::PublishMarker(void)
@@ -387,6 +437,8 @@ int main( int argc, char* argv[] )
     MyTrackerNode.advertiseTopic();
 
     ros::spin();
-    
+    //std::cerr << "cuong" << "\n";
+    //std::cerr << "skip_frames_: " << (int) skip_frames_<< "\n";
+
     return 0;
 }

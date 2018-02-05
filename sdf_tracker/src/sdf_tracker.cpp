@@ -20,7 +20,7 @@
 
 #include <time.h>
 #include "sdf_tracker/sdf_tracker.h"
-
+ 
 SDF_Parameters::SDF_Parameters()
 {  
   image_width = 640;
@@ -146,14 +146,18 @@ void SDFTracker::Init(SDF_Parameters &parameters)
   }   
 
   myGrid_ = new float**[parameters_.XSize];
+  myGrid_color = new unsigned char***[parameters_.XSize];
 
   for (int i = 0; i < parameters_.XSize; ++i)
   {
     myGrid_[i] = new float*[parameters_.YSize];
+    myGrid_color[i] = new unsigned char**[parameters_.YSize];
 
     for (int j = 0; j < parameters_.YSize; ++j)
     {
       myGrid_[i][j] = new float[parameters_.ZSize*2];
+      myGrid_color[i][j] = new unsigned char*[parameters_.ZSize];
+      for (int k = 0; k < parameters_.ZSize; k++) myGrid_color[i][j][k] = new unsigned char[3];
     }
   }
     
@@ -178,6 +182,10 @@ void SDFTracker::Init(SDF_Parameters &parameters)
   {
     cv::namedWindow( parameters_.render_window, 0 );
   }
+
+  sdf_cloud.reset(new pcl::PointCloud<pcl::PointXYZRGB>);
+  rgb_cloud.reset(new pcl::PointCloud<pcl::PointXYZRGB>);
+  segmented_cloud.reset(new pcl::PointCloud<pcl::PointXYZRGB>);
 };
 
 void SDFTracker::DeleteGrids(void)
@@ -1132,6 +1140,7 @@ SDFTracker::FuseDepth(const cv::Mat& depth)
   const float Wslope = 1/(parameters_.Dmax - parameters_.Dmin);
   this->UpdateDepth(depth);
   bool hasfused;
+
   if(!first_frame_)
   {
     hasfused = true;
@@ -1146,6 +1155,9 @@ SDFTracker::FuseDepth(const cv::Mat& depth)
   } 
   
   Transformation_ = Twist(Pose_).exp()*Transformation_;
+
+  //std::cerr << Pose_(0) << " " << Pose_(1) << " " << Pose_(2) << " " <<
+  //Pose_(3) << " " << Pose_(4) << " " << Pose_(5) << "\n";
   
   transformations_.push_back(Transformation_);
   cumulative_pose_ += Pose_;
@@ -1203,11 +1215,18 @@ SDFTracker::FuseDepth(const cv::Mat& depth)
 
             previousW[z*2] = std::min(previousW[z*2] + W , float(parameters_.Wmax));
 
+            myGrid_color[x][y][z][0] = (int)rgb_image.at<cv::Vec3b>(i,j)[0];
+            myGrid_color[x][y][z][1] = (int)rgb_image.at<cv::Vec3b>(i,j)[1];
+            myGrid_color[x][y][z][2] = (int)rgb_image.at<cv::Vec3b>(i,j)[2];
+
           }//within visible region 
         }//within bounds      
       }//z   
     }//y
   }//x
+  /* std::cerr<< "sdf rgb: " << (int) rgb_image.at<cv::Vec3b>(rgb_image.rows-1,1)[0] << "\n";
+  std::cerr<< "sdf cols: " << rgb_image.cols << "\n";
+  std::cerr<< "sdf rows: " << rgb_image.rows << "\n"; */
   Render();
   return;
 };
@@ -1455,7 +1474,7 @@ SDFTracker::EstimatePoseFromPoints(void)
 void 
 SDFTracker::Render(void)
 {
-  //double minStep = parameters_.resolution/4;
+  /* //double minStep = parameters_.resolution/4;
   cv::Mat depthImage_out(parameters_.image_height,parameters_.image_width,CV_32FC1);
   cv::Mat preview(parameters_.image_height,parameters_.image_width,CV_8UC3);
   
@@ -1530,7 +1549,7 @@ SDFTracker::Render(void)
 
   depthDenoised_mutex_.lock();
   depthImage_out.copyTo(*depthImage_denoised_);
-  depthDenoised_mutex_.unlock();    
+  depthDenoised_mutex_.unlock();   
  
   if(parameters_.interactive_mode)
   {
@@ -1538,7 +1557,7 @@ SDFTracker::Render(void)
     cv::imshow(parameters_.render_window, preview);//depthImage_denoised);
     char q = cv::waitKey(3);
     if(q == 'q' || q  == 27 || q  == 71 ) { quit_ = true; }//int(key)
-  }
+  } */
   return;
 };
 
@@ -1796,4 +1815,182 @@ Eigen::Vector3d SDFTracker::ShootSingleRay(Eigen::Vector3d &start, Eigen::Vector
     }
     return Eigen::Vector3d(1,1,1)*std::numeric_limits<double>::infinity();
 
+}
+
+void SDFTracker::regionGrowingSegmentation(int numOfNeighbor, double CurvatureThreshold)
+{
+  pcl::PointCloud<pcl::PointXYZ>::Ptr cloud (new pcl::PointCloud<pcl::PointXYZ>);
+  pcl::copyPointCloud(*sdf_cloud, *cloud);
+  pcl::search::Search<pcl::PointXYZ>::Ptr tree = boost::shared_ptr<pcl::search::Search<pcl::PointXYZ> > (new pcl::search::KdTree<pcl::PointXYZ>);
+  pcl::PointCloud <pcl::Normal>::Ptr normals (new pcl::PointCloud <pcl::Normal>);
+  pcl::NormalEstimation<pcl::PointXYZ, pcl::Normal> normal_estimator;
+  normal_estimator.setSearchMethod (tree);
+  normal_estimator.setInputCloud (cloud);
+  normal_estimator.setKSearch (100);
+  normal_estimator.compute (*normals);
+
+  pcl::IndicesPtr indices (new std::vector <int>);
+  pcl::PassThrough<pcl::PointXYZ> pass;
+  pass.setInputCloud (cloud);
+  pass.setFilterFieldName ("z");
+  pass.setFilterLimits (0.0, 1.0);
+  pass.filter (*indices);
+
+  pcl::RegionGrowing<pcl::PointXYZ, pcl::Normal> reg;
+  reg.setMinClusterSize (50);
+  reg.setMaxClusterSize (1000000);
+  reg.setSearchMethod (tree);
+  reg.setNumberOfNeighbours (numOfNeighbor);
+  reg.setInputCloud (cloud);
+  //reg.setIndices (indices);
+  reg.setInputNormals (normals);
+  reg.setSmoothnessThreshold (6.0 / 180.0 * M_PI);
+  reg.setCurvatureThreshold (CurvatureThreshold);
+
+  std::vector <pcl::PointIndices> clusters;
+  reg.extract (clusters);
+
+  std::cerr << "Number of clusters is equal to " << clusters.size () << std::endl;
+  std::cerr << "First cluster has " << clusters[0].indices.size () << " points." << endl;
+  pcl::PointXYZRGB point;
+
+  int j= 0;
+  for (std::vector<pcl::PointIndices>::const_iterator it = clusters.begin(); it != clusters.end(); ++it)
+	  {
+        for (std::vector<int>::const_iterator pit = it->indices.begin(); pit != it->indices.end(); ++pit)
+		     {
+           
+			     point.x = sdf_cloud->points[*pit].x;
+			     point.y = sdf_cloud->points[*pit].y;
+			     point.z = sdf_cloud->points[*pit].z;
+           if (j == 0) //Red	#FF0000	(255,0,0)
+			     {
+				      point.r = 255;
+				      point.g = 0;
+				      point.b = 0;
+			     }
+			     else if (j == 1) //Lime	#00FF00	(0,255,0)
+			     {
+				      point.r = 0;
+				      point.g = 255;
+				      point.b = 0;
+			     }
+			     else if (j == 2) // Blue	#0000FF	(0,0,255)
+			     {
+				      point.r = 0;
+				      point.g = 0;
+				      point.b = 255;
+			     }
+			     else if (j == 3) // Yellow	#FFFF00	(255,255,0)
+			     {
+				      point.r = 255;
+				      point.g = 255;
+				      point.b = 0;
+			     }
+			     else if (j == 4) //Cyan	#00FFFF	(0,255,255)
+			     {
+				      point.r = 0;
+				      point.g = 255;
+				      point.b = 255;
+			     }
+			     else if (j == 5) // Magenta	#FF00FF	(255,0,255)
+			     {
+				      point.r = 255;
+				      point.g = 0;
+				      point.b = 255;
+			     }
+			     else if (j == 6) // Olive	#808000	(128,128,0)
+		     	 {
+				      point.r = 128;
+				      point.g = 128;
+				      point.b = 0;
+			     }
+			     else if (j == 7) // Teal	#008080	(0,128,128)
+			     {
+				      point.r = 0;
+				      point.g = 128;
+				      point.b = 128;
+			     }
+			     else if (j == 8) // Purple	#800080	(128,0,128)
+		     	 {
+				      point.r = 128;
+				      point.g = 0;
+				      point.b = 128;
+			     }
+			     else
+		   	     {
+				      if (j % 2 == 0)
+				       {
+					        point.r = 255 * j / (clusters.size());
+					        point.g = 128;
+					        point.b = 50;
+				       }
+				      else
+				       {
+					        point.r = 0;
+					        point.g = 255 * j / (clusters.size());
+					        point.b = 128;
+				       }
+            }
+			   segmented_cloud->push_back(point);
+         }
+       j++;
+    }
+}
+
+void SDFTracker::gridToSDFPointCloud(double maxSDF, double minSDF)
+{
+  sdf_cloud.reset(new pcl::PointCloud<pcl::PointXYZRGB>);
+  double lut_scale = 255.0 / (maxSDF - minSDF);
+  int value_color; pcl::PointXYZRGB point;
+
+  for (int x = 0; x < parameters_.XSize; ++x)
+  {
+	 for (int y = 0; y < parameters_.YSize; ++y)
+	 {
+	   for (int z = 0; z < parameters_.ZSize; ++z)
+	    {
+        double SDFvalue = myGrid_[x][y][z*2];
+        if(SDFvalue < maxSDF & SDFvalue > minSDF)
+        {
+          point.x = x * parameters_.resolution;
+          point.y = y * parameters_.resolution;
+          point.z = z * parameters_.resolution / 2.000;
+          value_color = boost::math::iround((SDFvalue - minSDF) * lut_scale);
+          point.r = value_color > 128 ? (value_color - 128) * 2 : 0;
+				  point.g = value_color < 128 ? 2 * value_color : 255 - ((value_color - 128) * 2);
+			    point.b = value_color < 128 ? 255 - (2 * value_color) : 0;
+          sdf_cloud->push_back(point);
+        }
+	    }
+	 }
+  }
+  //std::cerr<< "numOfPoints: " << (int)sdf_cloud->size() << "\n";
+}
+
+void SDFTracker::gridToRGBPointCloud(double maxSDF, double minSDF)
+{
+  rgb_cloud.reset(new pcl::PointCloud<pcl::PointXYZRGB>);
+  pcl::PointXYZRGB point;
+
+  for (int x = 0; x < parameters_.XSize; ++x)
+  {
+	 for (int y = 0; y < parameters_.YSize; ++y)
+	 {
+	   for (int z = 0; z < parameters_.ZSize; ++z)
+	    {
+        double SDFvalue = myGrid_[x][y][z*2];
+        if(SDFvalue < maxSDF & SDFvalue > minSDF)
+        {
+          point.x = x * parameters_.resolution;
+          point.y = y * parameters_.resolution;
+          point.z = z * parameters_.resolution / 2.000;
+          point.r = myGrid_color[x][y][z][0];
+          point.g = myGrid_color[x][y][z][1];
+          point.b = myGrid_color[x][y][z][2];
+          rgb_cloud->push_back(point);
+        }
+	    }
+	 }
+  }
 }

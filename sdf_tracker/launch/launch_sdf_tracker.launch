@@ -3,9 +3,9 @@
   <node name="SDF" pkg="sdf_tracker" type="sdf_tracker_node">
     <param name="c_name" value="camera"/>
     <param name="offsetZ" value="-0.40"/>
-    <param name="GridSizeX" value= "300"/>
-    <param name="GridSizeY" value= "300"/>
-    <param name="GridSizeZ" value= "400"/>
+    <param name="GridSizeX" value= "200"/>
+    <param name="GridSizeY" value= "200"/>
+    <param name="GridSizeZ" value= "300"/>
     <param name="CellSize" value= "0.02" />
     <param name="PositiveTruncationDistance" value= "0.1" />
     <param name="NegativeTruncationDistance" value= "-0.04" />

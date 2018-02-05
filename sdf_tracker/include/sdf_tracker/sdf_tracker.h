@@ -5,10 +5,22 @@
 #include <Eigen/Core>
 #include <unsupported/Eigen/MatrixFunctions>
 
-#include <opencv2/core/core.hpp>
-#include <opencv2/imgproc/imgproc.hpp>
 #include <Eigen/StdVector>
 #include <time.h>
+
+// PCL specific includes
+#include <sensor_msgs/PointCloud2.h>
+#include <pcl_conversions/pcl_conversions.h>
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+#include <pcl/conversions.h>
+
+#include <vector>
+#include <pcl/search/search.h>
+#include <pcl/search/kdtree.h>
+#include <pcl/features/normal_3d.h>
+#include <pcl/filters/passthrough.h>
+#include <pcl/segmentation/region_growing.h>
 
 #define EIGEN_USE_NEW_STDVECTOR
 
@@ -81,7 +93,8 @@ class SDFTracker
 
   
   bool** validityMask_;
-  float*** myGrid_; 
+  float*** myGrid_;
+  unsigned char**** myGrid_color;
   bool first_frame_;
   bool quit_;
   
@@ -100,6 +113,12 @@ class SDFTracker
 
   std::vector<Eigen::Vector4d> triangles_;
   SDF_Parameters parameters_;
+
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr sdf_cloud;
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr rgb_cloud;
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr segmented_cloud;
+
+  cv::Mat rgb_image;
   
   /// Returns the signed distance at the given location 
   virtual double SDF(const Eigen::Vector4d &location);
@@ -172,6 +191,14 @@ class SDFTracker
 
   /// sets the current transformation to the given matrix
   void SetCurrentTransformation(const Eigen::Matrix4d &T); 
+
+  /// Merge the points that are close enough in terms of the smoothness constraint
+  void regionGrowingSegmentation(int numOfNeighbor, double CurvatureThreshold);
+
+  /// transfer grid to point cloud colored by SDF value
+  void gridToSDFPointCloud(double maxSDF, double minSDF);
+  
+  void gridToRGBPointCloud(double maxSDF, double minSDF);
 
   ///Ray-trace a single ray (for the ray defined by camera pixel x,y?) 
   Eigen::Vector3d ShootSingleRay(int row, int col, Eigen::Matrix4d &pose);

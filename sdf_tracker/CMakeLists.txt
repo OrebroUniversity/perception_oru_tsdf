@@ -22,7 +22,7 @@ else()
 endif()
 
 
-find_package(catkin REQUIRED COMPONENTS roscpp std_msgs cv_bridge std_srvs visualization_msgs)
+find_package(catkin REQUIRED COMPONENTS roscpp std_msgs cv_bridge std_srvs visualization_msgs pcl_conversions pcl_ros sensor_msgs)
 find_package(OpenCV 3 REQUIRED
 	COMPONENTS
 	opencv_core
@@ -34,7 +34,7 @@ find_package(OpenCV 3 REQUIRED
 
 catkin_package(
     DEPENDS eigen libvtk
-    CATKIN_DEPENDS roscpp std_msgs cv_bridge std_srvs visualization_msgs
+    CATKIN_DEPENDS roscpp std_msgs cv_bridge std_srvs visualization_msgs pcl_conversions pcl_ros
     INCLUDE_DIRS include
     LIBRARIES # TODO
 )
