@@ -1,25 +1,33 @@
 <?xml version="1.0"?>
 <launch>
-  <node name="SDF" pkg="sdf_tracker" type="sdf_tracker_node">
+  <node name="SDF" pkg="sdf_tracker" type="sdf_tracker_node" output="screen">
     <param name="c_name" value="camera"/>
-    <param name="offsetZ" value="-0.50"/>
-    <param name="GridSizeX" value= "300"/>
-    <param name="GridSizeY" value= "300"/>
-    <param name="GridSizeZ" value= "400"/>
-    <param name="CellSize" value= "0.01" />
-    <param name="PositiveTruncationDistance" value= "0.04" />
-    <param name="NegativeTruncationDistance" value= "-0.02" />
+    <!--param name="depth_registered" value="false"/-->
+    <param name="depth_registered" value= "true"/>
+    <remap from="/camera/depth_registered/image_raw" to="/camera/depth/image" />
+    <param name="offsetZ" value="-0.7"/>
+    <param name="GridSizeX" value= "200"/>
+    <param name="GridSizeY" value= "200"/>
+    <param name="GridSizeZ" value= "250"/>
+    <param name="CellSize" value= "0.007" />
+    <param name="PositiveTruncationDistance" value= "0.03" />
+    <param name="NegativeTruncationDistance" value= "-0.01" />
     <param name="RobustStatisticCoefficient" value= "0.02" />
     <param name="OutputVolume" value= "false" />
     <param name="InteractiveMode" value= "true" />
-    <param name="depth_registered" value= "true"/>
-    <param name="MaximumRaycastSteps" value= "160" /> 
-    <param name="SaveVolume" value= "$(find sdf_tracker)/maps/volume.vti" /> 
+    <param name="MaximumRaycastSteps" value= "300" /> 
+    <param name="OutputTriangles" value= "false" />
+    <param name="OutputVolumeName" value="/home/tsv/test.vti" />
+    
+    <param name="ImageWidth" value= "640"/>
+    <param name="ImageHeight" value= "480"/>
+    <param name="FocalLengthX" value= "616.535" />
+    <param name="FocalLengthY" value= "616.535" />
+    <param name="CenterPointX" value= "312.825" />
+    <param name="CenterPointY" value= "242.27" /> 
 
 <!-- full list of parameters and their default values -->
 <!--   
-    <param name="ImageWidth" value= "640"/>
-    <param name="ImageHeight" value= "480"/>
    
     <param name="OutputTriangles" value= "false" />
     <param name="InteractiveMode" value= "true" />

@@ -1,20 +1,44 @@
 <?xml version="1.0"?>
 <launch>
-  <node name="SDF" pkg="sdf_tracker" type="sdf_tracker_node">
+  <node name="SDF" pkg="sdf_tracker" type="sdf_tracker_node" output="screen">
     <param name="c_name" value="camera"/>
-    <param name="offsetZ" value="-0.50"/>
-    <param name="GridSizeX" value= "300"/>
+    <param name="depth_registered" value= "true"/>
+    <param name="offsetZ" value="-2.0"/>
+    <param name="offsetY" value="1.0"/>
+    <param name="offsetX" value="0.5"/>
+    <param name="GridSizeX" value= "500"/>
     <param name="GridSizeY" value= "300"/>
-    <param name="GridSizeZ" value= "400"/>
-    <param name="CellSize" value= "0.01" />
-    <param name="PositiveTruncationDistance" value= "0.04" />
-    <param name="NegativeTruncationDistance" value= "-0.02" />
+    <param name="GridSizeZ" value= "350"/>
+    <param name="CellSize" value= "0.025" />
+    <param name="PositiveTruncationDistance" value= "0.13" />
+    <param name="NegativeTruncationDistance" value= "-0.05" />
     <param name="RobustStatisticCoefficient" value= "0.02" />
+    <param name="MaximumRaycastSteps" value= "300" /> 
     <param name="OutputVolume" value= "false" />
     <param name="InteractiveMode" value= "true" />
-    <param name="depth_registered" value= "true"/>
-    <param name="MaximumRaycastSteps" value= "160" /> 
-    <param name="SaveVolume" value= "$(find sdf_tracker)/maps/volume.vti" /> 
+    <param name="OutputTriangles" value= "false" />
+    <param name="OutputVolumeName" value="/home/tsv/test.vti" />
+   
+    <!-- HD  
+    -->
+    <param name="image_scale_factor" value="0.001"/>
+    <param name="ImageWidth" value= "1920"/>
+    <param name="ImageHeight" value= "1080"/>
+    <param name="FocalLengthX" value= "1051.09" />
+    <param name="FocalLengthY" value= "1051.50" />
+    <param name="CenterPointX" value= "953.03" />
+    <param name="CenterPointY" value= "518.64" /> 
+    <remap from="/camera/depth_registered/image_raw" to="/kinect2/hd/image_depth_rect" />
+    
+    <!-- SD
+    <param name="ImageWidth" value= "512"/>
+    <param name="ImageHeight" value= "424"/>
+    <param name="FocalLengthX" value= "364.5" />
+    <param name="FocalLengthY" value= "364.5" />
+    <param name="CenterPointX" value= "364.55" /> 
+    <param name="CenterPointY" value= "254.89" />
+    <remap from="/camera/depth_registered/image_raw" to="/kinect2/sd/image_depth" />
+    -->
 
 <!-- full list of parameters and their default values -->
 <!--   
